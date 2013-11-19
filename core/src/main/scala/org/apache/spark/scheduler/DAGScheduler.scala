@@ -635,7 +635,7 @@ class DAGScheduler(
       case e: Exception =>
         job.listener.jobFailed(e)
     } finally {
-      eventQueue.put(LocalJobCompleted(job.finalStage))
+      eventProcessActor ! LocalJobCompleted(job.finalStage)
     }
   }
 
