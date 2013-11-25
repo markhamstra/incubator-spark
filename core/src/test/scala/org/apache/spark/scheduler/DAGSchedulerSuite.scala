@@ -17,6 +17,8 @@
 
 package org.apache.spark.scheduler
 
+import java.util.concurrent.Semaphore
+
 import scala.collection.mutable.{Map, HashMap}
 
 import org.scalatest.FunSuite
@@ -93,8 +95,21 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     override def taskSucceeded(index: Int, result: Any) = results.put(index, result)
     override def jobFailed(exception: Exception) = { failure = exception }
   }
+  val sparkListener = new SparkListener {
+    override def onJobEnd(jobEnd: SparkListenerJobEnd) {
+      assertDataStructuresEmpty
+      testEnd.release()
+    }
+  }
+  val testEnd = new Semaphore(0)  // drained at the beginning of each test
+                                  // released when a job ends
+                                  // acquired after the end of the test
+                                  // So, if a test is not expected to result in at least one job
+                                  // completing, then testEnd.release() must be called at the
+                                  // end of the test.
 
   before {
+    testEnd.drainPermits()
     sc = new SparkContext("local", "DAGSchedulerSuite")
     taskSets.clear()
     cacheLocations.clear()
@@ -106,9 +121,11 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
         runLocallyWithinThread(job)
       }
     }
+    scheduler.addSparkListener(sparkListener)
   }
 
   after {
+    testEnd.acquire()
     scheduler.stop()
   }
 
@@ -199,6 +216,7 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     }
     submit(rdd, Array(), listener = fakeListener)
     assert(numResults === 0)
+    testEnd.release()
   }
 
   test("run trivial job") {
@@ -206,7 +224,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     submit(rdd, Array(0))
     complete(taskSets(0), List((Success, 42)))
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   test("local job") {
@@ -221,7 +238,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     runEvent(JobSubmitted(jobId, rdd, jobComputeFunc, Array(0), true, null, listener))
     Thread.sleep(1000)
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   test("run trivial job w/ dependency") {
@@ -230,7 +246,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     submit(finalRdd, Array(0))
     complete(taskSets(0), Seq((Success, 42)))
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   test("cache location preferences w/ dependency") {
@@ -243,14 +258,12 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     assertLocations(taskSet, Seq(Seq("hostA", "hostB")))
     complete(taskSet, Seq((Success, 42)))
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   test("trivial job failure") {
     submit(makeRdd(1, Nil), Array(0))
     failed(taskSets(0), "some failure")
     assert(failure.getMessage === "Job aborted: some failure")
-    assertDataStructuresEmpty
   }
 
   test("run trivial shuffle") {
@@ -266,7 +279,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
            Array(makeBlockManagerId("hostA"), makeBlockManagerId("hostB")))
     complete(taskSets(1), Seq((Success, 42)))
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   test("run trivial shuffle with fetch failure") {
@@ -287,12 +299,11 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     // ask the scheduler to try it again
     scheduler.resubmitFailedStages()
     // have the 2nd attempt pass
-    complete(taskSets(2), Seq((Success, makeMapStatus("hostA", 1))))
+    complete(taskSets(2), Seq((Success, makeMapStatus("hostA", 1))))   // TODO IndexOutOfBoundsException: 2
     // we can see both result blocks now
     assert(mapOutputTracker.getServerStatuses(shuffleId, 0).map(_._1.host) === Array("hostA", "hostB"))
     complete(taskSets(3), Seq((Success, 43)))
     assert(results === Map(0 -> 42, 1 -> 43))
-    assertDataStructuresEmpty
   }
 
   test("ignore late map task completions") {
@@ -321,7 +332,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
            Array(makeBlockManagerId("hostB"), makeBlockManagerId("hostA")))
     complete(taskSets(1), Seq((Success, 42), (Success, 43)))
     assert(results === Map(0 -> 42, 1 -> 43))
-    assertDataStructuresEmpty
   }
 
   test("run trivial shuffle with out-of-band failure and retry") {
@@ -344,7 +354,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
            Array(makeBlockManagerId("hostC"), makeBlockManagerId("hostB")))
     complete(taskSets(2), Seq((Success, 42)))
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   test("recursive shuffle failures") {
@@ -373,7 +382,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     complete(taskSets(4), Seq((Success, makeMapStatus("hostA", 1))))
     complete(taskSets(5), Seq((Success, 42)))
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   test("cached post-shuffle") {
@@ -405,7 +413,6 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     complete(taskSets(3), Seq((Success, makeMapStatus("hostD", 1))))
     complete(taskSets(4), Seq((Success, 42)))
     assert(results === Map(0 -> 42))
-    assertDataStructuresEmpty
   }
 
   /**
@@ -415,7 +422,7 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
   private def assertLocations(taskSet: TaskSet, hosts: Seq[Seq[String]]) {
     assert(hosts.size === taskSet.tasks.size)
     for ((taskLocs, expectedLocs) <- taskSet.tasks.map(_.preferredLocations).zip(hosts)) {
-      assert(taskLocs.map(_.host) === expectedLocs)
+      assert(taskLocs.map(_.host) === expectedLocs)  // TODO ArrayBuffer() did not equal List(hostD)
     }
   }
 
