@@ -23,6 +23,7 @@ import scala.collection.mutable.{Map, HashMap}
 
 import org.scalatest.FunSuite
 import org.scalatest.BeforeAndAfter
+import org.scalatest.matchers.ShouldMatchers
 
 import org.apache.spark.LocalSparkContext
 import org.apache.spark.MapOutputTrackerMaster
@@ -47,7 +48,9 @@ import org.apache.spark.storage.{BlockId, BlockManagerId, BlockManagerMaster}
  * DAGScheduler#submitWaitingStages (via test utility functions like runEvent or respondToTaskSet)
  * and capturing the resulting TaskSets from the mock TaskScheduler.
  */
-class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkContext {
+class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with
+                                              LocalSparkContext with
+                                              ShouldMatchers {
 
   /** Set of TaskSets the DAGScheduler has requested executed. */
   val taskSets = scala.collection.mutable.Buffer[TaskSet]()
@@ -125,7 +128,7 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
   }
 
   after {
-    testEnd.acquire()
+    testEnd.tryAcquire(1, 3, java.util.concurrent.TimeUnit.SECONDS) should be (true)
     scheduler.stop()
   }
 
@@ -299,7 +302,7 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
     // ask the scheduler to try it again
     scheduler.resubmitFailedStages()
     // have the 2nd attempt pass
-    complete(taskSets(2), Seq((Success, makeMapStatus("hostA", 1))))   // TODO IndexOutOfBoundsException: 2
+    complete(taskSets(2), Seq((Success, makeMapStatus("hostA", 1))))
     // we can see both result blocks now
     assert(mapOutputTracker.getServerStatuses(shuffleId, 0).map(_._1.host) === Array("hostA", "hostB"))
     complete(taskSets(3), Seq((Success, 43)))
@@ -422,7 +425,7 @@ class DAGSchedulerSuite extends FunSuite with BeforeAndAfter with LocalSparkCont
   private def assertLocations(taskSet: TaskSet, hosts: Seq[Seq[String]]) {
     assert(hosts.size === taskSet.tasks.size)
     for ((taskLocs, expectedLocs) <- taskSet.tasks.map(_.preferredLocations).zip(hosts)) {
-      assert(taskLocs.map(_.host) === expectedLocs)  // TODO ArrayBuffer() did not equal List(hostD)
+      assert(taskLocs.map(_.host) === expectedLocs)
     }
   }
 
