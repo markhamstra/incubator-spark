@@ -112,12 +112,19 @@ class DAGScheduler(
 
   // Warns the user if a stage contains a task with size greater than this value (in KB)
   val TASK_SIZE_TO_WARN = 100
+  
+  // override to true within tests (DAGSchedulerSuite)
+  private[scheduler] def inTest = false
 
   private val eventProcessActor: ActorRef = env.actorSystem.actorOf(Props(new Actor {
     override def preStart() {
-      context.system.scheduler.schedule(RESUBMIT_TIMEOUT milliseconds, RESUBMIT_TIMEOUT milliseconds) {
-        if (failed.size > 0) {
-          resubmitFailedStages()
+      // Tests call resubmitFailedStages directly, so resubmission should not be scheduled when
+      // testing, else concurrent mutation of DAGScheduler data structures may occur.
+      if (!inTest) {
+        context.system.scheduler.schedule(RESUBMIT_TIMEOUT milliseconds, RESUBMIT_TIMEOUT milliseconds) {
+          if (failed.size > 0) {
+            resubmitFailedStages()
+          }
         }
       }
     }
