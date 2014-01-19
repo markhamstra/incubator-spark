@@ -690,44 +690,42 @@ class SparkContext(
     if (path == null) {
       logWarning("null specified as parameter to addJar")
     } else {
-      var key = ""
-      if (path.contains("\\")) {
-        // For local paths with backslashes on Windows, URI throws an exception
-        key = env.httpFileServer.addJar(new File(path))
-      } else {
-        val uri = new URI(path)
-        key = uri.getScheme match {
-          // A JAR file which exists only on the driver node
-          case null | "file" =>
-            if (SparkHadoopUtil.get.isYarnMode() && master == "yarn-standalone") {
-              // In order for this to work in yarn standalone mode the user must specify the 
-              // --addjars option to the client to upload the file into the distributed cache 
-              // of the AM to make it show up in the current working directory.
-              val fileName = new Path(uri.getPath).getName()
-              try {
-                env.httpFileServer.addJar(new File(fileName))
-              } catch {
-                case e: Exception => {
-                  // For now just log an error but allow to go through so spark examples work.
-                  // The spark examples don't really need the jar distributed since its also 
-                  // the app jar.
-                  logError("Error adding jar (" + e + "), was the --addJars option used?")
-                  null
+      val key = if (path.contains("\\")) {
+          // For local paths with backslashes on Windows, URI throws an exception
+          Some(env.httpFileServer.addJar(new File(path)))
+        } else {
+          val uri = new URI(path)
+          uri.getScheme match {
+            // A JAR file which exists only on the driver node
+            case null | "file" =>
+              if (SparkHadoopUtil.get.isYarnMode() && master == "yarn-standalone") {
+                // In order for this to work in yarn standalone mode the user must specify the
+                // --addjars option to the client to upload the file into the distributed cache
+                // of the AM to make it show up in the current working directory.
+                val fileName = new Path(uri.getPath).getName
+                try {
+                  Some(env.httpFileServer.addJar(new File(fileName)))
+                } catch {
+                  case e: Exception =>
+                    // For now just log an error but allow to go through so spark examples work.
+                    // The spark examples don't really need the jar distributed since its also
+                    // the app jar.
+                    logError(s"Error adding jar ($e), was the --addJars option used?")
+                    None
                 }
+              } else {
+                Some(env.httpFileServer.addJar(new File(uri.getPath)))
               }
-            } else {
-              env.httpFileServer.addJar(new File(uri.getPath))
-            }
-          // A JAR file which exists locally on every worker node
-          case "local" =>
-            "file:" + uri.getPath
-          case _ =>
-            path
+            // A JAR file which exists locally on every worker node
+            case "local" =>
+              Some("file:" + uri.getPath)
+            case _ =>
+              Some(path)
+          }
         }
-      }
-      if (key != null) {
-        addedJars(key) = System.currentTimeMillis
-        logInfo("Added JAR " + path + " at " + key + " with timestamp " + addedJars(key))
+      key.foreach { k =>
+        addedJars(k) = System.currentTimeMillis
+        logInfo(s"Added JAR $path at $k with timestamp $addedJars(k)")
       }
     }
   }
