@@ -687,9 +687,7 @@ class SparkContext(
    * filesystems), an HTTP, HTTPS or FTP URI, or local:/path for a file on every worker node.
    */
   def addJar(path: String) {
-    if (path == null) {
-      logWarning("null specified as parameter to addJar")
-    } else {
+    Option(path).fold(logWarning("null specified as parameter to addJar")) { path =>
       val key = if (path.contains("\\")) {
           // For local paths with backslashes on Windows, URI throws an exception
           Some(env.httpFileServer.addJar(new File(path)))
